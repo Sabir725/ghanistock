@@ -1,4 +1,5 @@
-flask
+Flask
 python-dotenv
 fyers-apiv3
-pytz
+Flask-SocketIO
+eventlet

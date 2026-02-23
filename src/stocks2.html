@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intraday Stock Dashboard - WebSockets</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f4f4f4; color: #333; margin: 0; padding: 0; }
+        .container { max-width: 1200px; margin: 20px auto; padding: 20px; background-color: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        h1 { color: #2c3e50; margin: 0; }
+        .header-info { display: flex; align-items: center; gap: 20px; }
+        #market-status { font-size: 18px; font-weight: bold; padding: 8px 15px; border-radius: 5px; color: white; }
+        .status-open { background-color: #27ae60; }
+        .status-closed { background-color: #c0392b; }
+        .logout-link { font-size: 14px; color: #3498db; text-decoration: none; font-weight: bold; }
+        h2 { color: #34495e; border-bottom: 2px solid #3498db; padding-bottom: 10px; margin-top: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px 15px; border: 1px solid #ddd; text-align: left; vertical-align: middle; }
+        th { background-color: #3498db; color: white; text-transform: uppercase; font-size: 14px; }
+        td { font-size: 16px; }
+        .gainer { color: #27ae60; }
+        .loser { color: #c0392b; }
+        .suggestion { font-weight: bold; }
+        .buy-suggestion { color: #27ae60; }
+        .sell-suggestion { color: #c0392b; }
+        .actions { text-align: center; }
+        .quantity { width: 60px; padding: 8px; text-align: center; border: 1px solid #ccc; border-radius: 4px; margin-right: 10px; }
+        .btn { border: none; padding: 8px 15px; margin: 0 5px; border-radius: 4px; color: white; cursor: pointer; font-size: 14px; font-weight: bold; }
+        .buy-btn { background-color: #27ae60; }
+        .sell-btn { background-color: #c0392b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Intraday Stock Dashboard (WebSockets)</h1>
+            <div class="header-info">
+                <div id="market-status">Connecting...</div>
+                <a href="/logout" class="logout-link">Logout</a>
+            </div>
+        </div>
+        
+        <div class="market-section">
+            <h2>Top Buys</h2>
+            <table id="top-gainers">
+                <thead>
+                    <tr>
+                        <th>Stock Name</th>
+                        <th>Price</th>
+                        <th>Change</th>
+                        <th>% Change</th>
+                        <th>Suggestion</th>
+                        <th class="actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div class="market-section">
+            <h2>Top Sells</h2>
+            <table id="top-losers">
+                <thead>
+                    <tr>
+                        <th>Stock Name</th>
+                        <th>Price</th>
+                        <th>Change</th>
+                        <th>% Change</th>
+                        <th>Suggestion</th>
+                        <th class="actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+
+        function updateStockTable(tableId, stocks) {
+            const tableBody = document.querySelector(`#${tableId} tbody`);
+            tableBody.innerHTML = ''; 
+
+            stocks.forEach(stock => {
+                const row = document.createElement('tr');
+                const changeClass = stock.change >= 0 ? 'gainer' : 'loser';
+                
+                let suggestionClass = 'hold';
+                if (stock.suggestion.startsWith('BUY')) {
+                    suggestionClass = 'buy-suggestion';
+                } else if (stock.suggestion.startsWith('SELL')) {
+                    suggestionClass = 'sell-suggestion';
+                }
+
+                row.innerHTML = `
+                    <td data-symbol="${stock.name}"><strong>${stock.name}</strong></td>
+                    <td>₹${stock.price.toFixed(2)}</td>
+                    <td class="${changeClass}">${stock.change.toFixed(2)}</td>
+                    <td class="${changeClass}">${stock.percent_change.toFixed(2)}%</td>
+                    <td class="suggestion ${suggestionClass}">${stock.suggestion}</td>
+                    <td class="actions">
+                        <input type="number" class="quantity" value="1" min="1">
+                        <button class="btn buy-btn">Buy</button>
+                        <button class="btn sell-btn">Sell</button>
+                    </td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        async function handleTradeAction(event) {
+            const target = event.target;
+            if (!target.classList.contains('btn')) return;
+
+            const row = target.closest('tr');
+            const stockSymbol = row.querySelector('td[data-symbol]').dataset.symbol;
+            const quantity = row.querySelector('.quantity').value;
+            const action = target.classList.contains('buy-btn') ? 'buy' : 'sell';
+
+            if (!quantity || quantity <= 0) {
+                alert('Please enter a valid quantity.');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/trade', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ symbol: stockSymbol, quantity: quantity, action: action })
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    alert(`Trade successful! Order ID: ${result.order_id}`);
+                } else {
+                    alert(`Trade failed: ${result.message}`);
+                }
+            } catch (error) {
+                alert('An error occurred while placing the trade.');
+                console.error("Trade Error:", error);
+            }
+        }
+
+        function setMarketStatus(status) {
+            const statusDiv = document.getElementById('market-status');
+            statusDiv.textContent = `Market is ${status}`;
+            statusDiv.className = status === 'Open' ? 'status-open' : 'status-closed';
+        }
+        
+        socket.on('connect', () => {
+            console.log('Connected to the server!');
+        });
+
+        socket.on('stock_update', (data) => {
+            setMarketStatus(data.market_status || "Open");
+            updateStockTable('top-gainers', data.top_gainers);
+            updateStockTable('top-losers', data.top_losers);
+        });
+
+        socket.on('auth_error', (data) => {
+            console.error("Authentication Error:", data.error);
+            alert("Your session has expired. Please log in again.");
+            window.location.href = '/';
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from the server.');
+            setMarketStatus('Disconnected');
+        });
+
+        document.getElementById('top-gainers').addEventListener('click', handleTradeAction);
+        document.getElementById('top-losers').addEventListener('click', handleTradeAction);
+
+    </script>
+</body>
+</html>
