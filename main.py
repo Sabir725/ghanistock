@@ -1,5 +1,5 @@
 import os
-from datetime import date
+from datetime import date, datetime # Import datetime
 from flask import Flask, render_template, jsonify, redirect, request, session, url_for
 from dotenv import load_dotenv
 from fyers_apiv3 import fyersModel
@@ -26,6 +26,9 @@ SECRET_KEY = os.getenv('FYERS_SECRET_KEY')
 # --- In-memory store for price history and trend analysis ---
 price_history = {}
 PRICE_HISTORY_LENGTH = 3  # Keep the last 3 prices to detect a trend
+
+# --- Bot Portfolio (In-memory store) ---
+bot_portfolio = {} # Global dictionary to store bot-bought stocks
 
 # Use the Nifty 100 list for a broader market view
 STOCKS_TO_TRACK = [
@@ -115,6 +118,44 @@ def fetch_stock_data_for_websockets():
                             'suggestion': suggestion,
                             'trend_strength': trend_strength
                         })
+
+                    # --- Bot Automated Selling Logic ---
+                    # Create a temporary list of active bot-bought stocks to avoid modifying
+                    # bot_portfolio while iterating over it.
+                    active_bot_stocks = list(bot_portfolio.items())
+                    for symbol, bot_stock_data in active_bot_stocks:
+                        if bot_stock_data['status'] == 'active':
+                            # Find current price and trend for this symbol from stocks_data
+                            current_stock_info = next((s for s in stocks_data if s['name'] == symbol), None)
+                            
+                            if current_stock_info:
+                                current_price = current_stock_info['price']
+                                trend_strength = current_stock_info['trend_strength']
+                                suggestion = current_stock_info['suggestion']
+
+                                # Example sell condition: If trend is downward by 5% or more
+                                # This is a placeholder, a real bot would have more sophisticated logic.
+                                if "SELL NOW" in suggestion and trend_strength <= -5.0: # -5.0 for a 5% downward trend
+                                    print(f"Bot selling {symbol}: Downward trend of {trend_strength:.2f}%.")
+                                    # Update bot_portfolio entry to reflect the sale
+                                    bot_portfolio[symbol].update({
+                                        "status": "sold",
+                                        "sell_price": current_price,
+                                        "sell_time": datetime.now().isoformat()
+                                    })
+                                    # In a real scenario, you would also place a sell order via Fyers API here
+                                    # Example:
+                                    # order_response = fyers.place_order(data={
+                                    #     "symbol": f"NSE:{symbol}-EQ",
+                                    #     "qty": bot_stock_data['quantity'],
+                                    #     "type": 2, # Market Order
+                                    #     "side": -1, # Sell
+                                    #     "productType": "INTRADAY",
+                                    #     "validity": "DAY"
+                                    # })
+                                    # print(f"Fyers sell order response for {symbol}: {order_response}")
+                    # --- End of Bot Automated Selling Logic ---
+
 
                     # Sort based on the algorithm's trend detection
                     top_buys = sorted([s for s in stocks_data if s['trend_strength'] > 0], key=lambda x: x['trend_strength'], reverse=True)
@@ -333,6 +374,41 @@ def place_trade():
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/api/bot_buy", methods=['POST'])
+def bot_buy():
+    if 'access_token' not in session:
+        return jsonify({"error": "User not authenticated"}), 401
+    
+    try:
+        trade_data = request.json
+        symbol = trade_data.get('symbol')
+        quantity = trade_data.get('quantity')
+        purchase_price = trade_data.get('purchase_price')
+
+        if not all([symbol, quantity, purchase_price]):
+            return jsonify({"success": False, "message": "Missing symbol, quantity, or purchase_price"}), 400
+
+        # Store in bot_portfolio. If multiple buys of the same stock, sum quantities and average price.
+        # For simplicity, we'll overwrite or create a new entry for the symbol for now.
+        # A more robust solution would handle multiple positions or update existing ones.
+        bot_portfolio[symbol] = {
+            "symbol": symbol,
+            "quantity": int(quantity),
+            "purchase_price": float(purchase_price),
+            "purchase_time": datetime.now().isoformat(), # Store as ISO format string
+            "status": "active"
+        }
+        return jsonify({"success": True, "message": f"Bot bought {quantity} of {symbol}"}), 200
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/api/bot_portfolio", methods=['GET'])
+def get_bot_portfolio():
+    if 'access_token' not in session:
+        return jsonify({"error": "User not authenticated"}), 401
+    
+    return jsonify({"success": True, "portfolio": bot_portfolio}), 200
 
 # --- SocketIO Event Handlers ---
 @socketio.on('connect')

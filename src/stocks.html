@@ -31,6 +31,8 @@
         .buy-btn { background-color: #27ae60; }
         .sell-btn { background-color: #c0392b; }
         .chart-btn { background-color: #3498db; }
+        /* New style for Bot Buy button */
+        .bot-buy-btn { background-color: #f39c12; }
         
         /* Modal styles */
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.5); }
@@ -84,6 +86,23 @@
                 <tbody></tbody>
             </table>
         </div>
+
+        <div class="market-section">
+            <h2>Bot Portfolio</h2>
+            <table id="bot-portfolio">
+                <thead>
+                    <tr>
+                        <th>Stock Name</th>
+                        <th>Quantity</th>
+                        <th>Purchase Price</th>
+                        <th>Current Price</th>
+                        <th>P&L</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
     </div>
 
     <!-- Chart Modal -->
@@ -98,12 +117,14 @@
     <script>
         let dataFetchInterval;
         let stockChart = null;
+        let currentMarketData = {}; // Store current market data for P&L calculations
 
         function updateStockTable(tableId, stocks) {
             const tableBody = document.querySelector(`#${tableId} tbody`);
             tableBody.innerHTML = ''; 
 
             stocks.forEach(stock => {
+                currentMarketData[stock.name] = { price: stock.price, suggestion: stock.suggestion, trend_strength: stock.trend_strength }; // Store for bot logic
                 const row = document.createElement('tr');
                 const changeClass = stock.change >= 0 ? 'gainer' : 'loser';
                 
@@ -116,7 +137,7 @@
 
                 row.innerHTML = `
                     <td data-symbol="${stock.name}"><strong>${stock.name}</strong></td>
-                    <td>₹${stock.price.toFixed(2)}</td>
+                    <td data-price="${stock.price.toFixed(2)}">₹${stock.price.toFixed(2)}</td>
                     <td class="${changeClass}">${stock.change.toFixed(2)}</td>
                     <td class="${changeClass}">${stock.percent_change.toFixed(2)}%</td>
                     <td class="suggestion ${suggestionClass}">${stock.suggestion}</td>
@@ -124,6 +145,7 @@
                     <td class="actions">
                         <input type="number" class="quantity" value="1" min="1">
                         <button class="btn buy-btn">Buy</button>
+                        <button class="btn bot-buy-btn">Bot Buy</button>
                         <button class="btn sell-btn">Sell</button>
                     </td>
                 `;
@@ -198,9 +220,39 @@
             modal.style.display = "none";
         }
 
+        function handleBotBuy(event) {
+            event.preventDefault(); // Prevent default button action if any
+            const target = event.target;
+            const row = target.closest('tr');
+            const stockSymbol = row.querySelector('td[data-symbol]').dataset.symbol;
+            const quantity = parseInt(row.querySelector('.quantity').value);
+            const currentPrice = parseFloat(row.querySelector('td[data-price]').dataset.price);
+
+            if (isNaN(quantity) || quantity <= 0) {
+                alert('Please enter a valid quantity.');
+                return;
+            }
+
+            const botTrade = {
+                symbol: stockSymbol,
+                quantity: quantity,
+                purchase_price: currentPrice,
+                purchase_time: new Date().toISOString(), // Use ISO string for consistent date handling
+                status: 'active'
+            };
+
+            let botPortfolio = JSON.parse(localStorage.getItem('bot_portfolio') || '[]');
+            botPortfolio.push(botTrade);
+            localStorage.setItem('bot_portfolio', JSON.stringify(botPortfolio));
+
+            alert(`Bot Buy initiated for ${stockSymbol} x ${quantity} at ₹${currentPrice.toFixed(2)}!`);
+            fetchBotPortfolio(currentMarketData); // Refresh bot portfolio after simulated buy
+        }
+
+
         async function handleTradeAction(event) {
             const target = event.target;
-            if (!target.classList.contains('btn') || target.classList.contains('chart-btn')) return;
+            if (!target.classList.contains('btn') || target.classList.contains('chart-btn') || target.classList.contains('bot-buy-btn')) return; // Exclude bot-buy button
 
             const row = target.closest('tr');
             const stockSymbol = row.querySelector('td[data-symbol]').dataset.symbol;
@@ -231,10 +283,82 @@
             }
         }
 
+        function updateBotPortfolioTable(botPortfolio, allCurrentStocks) {
+            const tableBody = document.querySelector('#bot-portfolio tbody');
+            tableBody.innerHTML = '';
+
+            if (botPortfolio.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">No bot trades yet.</td></tr>';
+                return;
+            }
+
+            botPortfolio.forEach((trade) => {
+                const row = document.createElement('tr');
+                const currentStockData = allCurrentStocks[trade.symbol];
+                let currentPrice = trade.purchase_price; // Default to purchase price
+                let pnl = 0;
+                let pnlClass = '';
+
+                if (trade.status === 'active' && currentStockData) {
+                    currentPrice = currentStockData.price;
+                    pnl = (currentPrice - trade.purchase_price) * trade.quantity;
+                } else if (trade.status === 'sold' && trade.sell_price) {
+                    currentPrice = trade.sell_price;
+                    pnl = (trade.sell_price - trade.purchase_price) * trade.quantity;
+                }
+                
+                pnlClass = pnl >= 0 ? 'gainer' : 'loser';
+                const statusClass = trade.status === 'active' ? 'buy-suggestion' : 'sell-suggestion';
+
+
+                row.innerHTML = `
+                    <td><strong>${trade.symbol}</strong></td>
+                    <td>${trade.quantity}</td>
+                    <td>₹${trade.purchase_price.toFixed(2)}</td>
+                    <td>₹${currentPrice.toFixed(2)}</td>
+                    <td class="${pnlClass}">₹${pnl.toFixed(2)}</td>
+                    <td class="${statusClass}">${trade.status.charAt(0).toUpperCase() + trade.status.slice(1)}</td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
         function setMarketStatus(status) {
             const statusDiv = document.getElementById('market-status');
             statusDiv.textContent = `Market is ${status}`;
             statusDiv.className = status === 'Open' ? 'status-open' : 'status-closed';
+        }
+
+        async function fetchBotPortfolio(allCurrentStocks) {
+            let botPortfolio = JSON.parse(localStorage.getItem('bot_portfolio') || '[]');
+            
+            // --- Bot Selling Logic (Client-side) ---
+            let portfolioUpdated = false;
+            botPortfolio = botPortfolio.map(item => {
+                if (item.status === 'active') {
+                    const marketInfo = allCurrentStocks[item.symbol];
+                    if (marketInfo) {
+                        const currentPrice = marketInfo.price;
+                        
+                        // Example selling condition: Strong SELL NOW signal
+                        if (marketInfo.suggestion.startsWith('SELL NOW') && marketInfo.trend_strength < -1.0) { // Using -1.0 for testing
+                            console.log(`Bot Selling ${item.symbol}: Strong SELL signal (Trend: ${marketInfo.trend_strength.toFixed(2)})`);
+                            item.status = 'sold';
+                            item.sell_price = currentPrice;
+                            item.sell_time = new Date().toISOString();
+                            portfolioUpdated = true;
+                        }
+                    }
+                }
+                return item;
+            });
+
+            if (portfolioUpdated) {
+                localStorage.setItem('bot_portfolio', JSON.stringify(botPortfolio));
+            }
+            // --- End Bot Selling Logic ---
+
+            updateBotPortfolioTable(botPortfolio, allCurrentStocks);
         }
 
         async function fetchStockData() {
@@ -257,16 +381,47 @@
                 setMarketStatus(data.market_status || "Open");
                 updateStockTable('top-gainers', data.top_gainers);
                 updateStockTable('top-losers', data.top_losers);
+                
+                // Consolidate all current stock data for bot logic and portfolio display
+                const allCurrentStocks = {};
+                data.top_gainers.forEach(stock => {
+                    allCurrentStocks[stock.name] = { price: stock.price, suggestion: stock.suggestion, trend_strength: stock.trend_strength };
+                });
+                data.top_losers.forEach(stock => {
+                    allCurrentStocks[stock.name] = { price: stock.price, suggestion: stock.suggestion, trend_strength: stock.trend_strength };
+                });
+
+                // Fetch and update bot portfolio with every stock data fetch
+                await fetchBotPortfolio(allCurrentStocks); 
 
             } catch (error) {
                 console.error("Error fetching data:", error);
             }
         }
         
-        document.getElementById('top-gainers').addEventListener('click', handleTradeAction);
-        document.getElementById('top-losers').addEventListener('click', handleTradeAction);
-        document.getElementById('top-gainers').addEventListener('click', openChartModal);
-        document.getElementById('top-losers').addEventListener('click', openChartModal);
+        // Event listeners
+        // Listen for all clicks on the top-gainers table body
+        document.getElementById('top-gainers').addEventListener('click', (event) => {
+            if (event.target.classList.contains('buy-btn') || event.target.classList.contains('sell-btn')) {
+                handleTradeAction(event);
+            } else if (event.target.classList.contains('bot-buy-btn')) {
+                handleBotBuy(event);
+            } else if (event.target.classList.contains('chart-btn')) {
+                openChartModal(event);
+            }
+        });
+
+        // Listen for all clicks on the top-losers table body
+        document.getElementById('top-losers').addEventListener('click', (event) => {
+            if (event.target.classList.contains('buy-btn') || event.target.classList.contains('sell-btn')) {
+                handleTradeAction(event);
+            } else if (event.target.classList.contains('bot-buy-btn')) {
+                handleBotBuy(event);
+            } else if (event.target.classList.contains('chart-btn')) {
+                openChartModal(event);
+            }
+        });
+
 
         document.querySelector('.close').onclick = closeModal;
         window.onclick = function(event) {
